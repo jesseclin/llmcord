@@ -9,6 +9,7 @@ import discord
 import httpx
 from openai import AsyncOpenAI
 import yaml
+from retriever import retriver
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +80,7 @@ async def on_message(new_msg):
         return
 
     cfg = get_config()
+    search = retriver()
 
     allowed_channel_ids = cfg["allowed_channel_ids"]
     allowed_role_ids = cfg["allowed_role_ids"]
@@ -179,6 +181,12 @@ async def on_message(new_msg):
 
     logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
+    #if messages[-1]['role'] == 'user':
+    user_messages = [messages[i]['content'] if messages[i]['role']=='user' else " " for i in range(len(messages) )]
+    retrieved_docs = search.hybrid_search(" ".join(user_messages))
+    context = " ".join(retrieved_docs)
+    messages.append({'content':context, 'role':'assistant'})
+    
     if system_prompt := cfg["system_prompt"]:
         system_prompt_extras = [f"Today's date: {dt.now().strftime('%B %d %Y')}."]
         if accept_usernames:
@@ -186,6 +194,8 @@ async def on_message(new_msg):
 
         full_system_prompt = dict(role="system", content="\n".join([system_prompt] + system_prompt_extras))
         messages.append(full_system_prompt)
+    
+    print(messages)
 
     # Generate and send response message(s) (can be multiple if response is long)
     response_msgs = []
