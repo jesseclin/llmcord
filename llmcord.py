@@ -181,21 +181,55 @@ async def on_message(new_msg):
 
     logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
+    #RAG
     #if messages[-1]['role'] == 'user':
-    user_messages = [messages[i]['content'] if messages[i]['role']=='user' else " " for i in range(len(messages) )]
-    retrieved_docs = search.hybrid_search(" ".join(user_messages))
-    context = " ".join(retrieved_docs)
-    messages.append({'content':context, 'role':'assistant'})
+    #user_messages = [messages[i]['content'] if messages[i]['role']=='user' else " " for i in range(len(messages) )]
+    #retrieved_docs = search.hybrid_search(" ".join(user_messages))
+    #context = " ".join(retrieved_docs)
+    #messages.append({'content':context, 'role':'assistant'})
     
+    if system_prompt := cfg["system_prompt1"]:
+        full_system_prompt = """
+You are a specialized classifier tasked with determining whether a given chat history is relevant to VLSI (Very Large Scale Integration) circuit design.
+
+Your task is to carefully examine the entire chat history and make a binary decision:
+- Respond "Yes" if the conversation involves or relates to:
+  1. Electronic circuit design
+  2. Semiconductor manufacturing
+  3. Integrated circuit architecture
+  4. Transistor-level design
+  5. Chip layout and routing
+  6. VLSI design tools and methodologies
+  7. Semiconductor physics
+  8. Digital or analog circuit design
+  9. Microarchitecture
+  10. Semiconductor fabrication processes
+
+- Respond "No" if the conversation is about any other unrelated topic
+
+Important rules:
+- You must ONLY respond with "Yes" or "No"
+- Do not provide any additional explanation or text
+- Your response should be based on the entire chat history context
+
+Input will be a Python list of dictionaries representing the chat history.
+"""
+        #messages.append(full_system_prompt)
+        #print(str(messages[::-1]))
+        kwargs = dict(model=model, prompt=full_system_prompt+"\n\n#Chat History:\n"+str(messages[::-1]), extra_body=cfg["extra_api_parameters"])
+        response = await openai_client.completions.create(model=model, prompt=full_system_prompt+"\n\n#Chat History:\n"+str(messages[::-1]), extra_body=cfg["extra_api_parameters"])
+        #messages.pop()
+        print(f"[ANS]{response.choices[0]}")
+
     if system_prompt := cfg["system_prompt"]:
         system_prompt_extras = [f"Today's date: {dt.now().strftime('%B %d %Y')}."]
         if accept_usernames:
             system_prompt_extras.append("User's names are their Discord IDs and should be typed as '<@ID>'.")
 
         full_system_prompt = dict(role="system", content="\n".join([system_prompt] + system_prompt_extras))
-        messages.append(full_system_prompt)
+        messages[:-1].append(full_system_prompt)
     
-    print(messages)
+    #print(str(messages[::-1]))
 
     # Generate and send response message(s) (can be multiple if response is long)
     response_msgs = []
@@ -257,6 +291,7 @@ async def on_message(new_msg):
     except:
         logging.exception("Error while generating response")
 
+    print(response_msgs)
     for msg in response_msgs:
         msg_nodes[msg.id].text = "".join(response_contents)
         msg_nodes[msg.id].lock.release()
