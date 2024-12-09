@@ -188,59 +188,56 @@ async def on_message(new_msg):
     #context = " ".join(retrieved_docs)
     #messages.append({'content':context, 'role':'assistant'})
     
-    if system_prompt := cfg["system_prompt1"]:
-        full_system_prompt = """
-You are a specialized classifier tasked with determining whether a given chat history is relevant to VLSI (Very Large Scale Integration) circuit design.
+    #if system_prompt := cfg["system_prompt_classifier"] :
+    #    full_system_prompt = f"{system_prompt}\n\nChat History:\n{str(messages[::-1])}\n"
+    #    print(system_prompt)
+    #    kwargs = dict(model=model, prompt=full_system_prompt, extra_body=cfg["extra_api_parameters"])
+    #    response = await openai_client.completions.create(**kwargs)
+    #    answer = response.choices[0].text
+    #    print(f"[ANSWER] {answer}")
+    #    if answer == "Yes":
 
-Your task is to carefully examine the entire chat history and make a binary decision:
-- Respond "Yes" if the conversation involves or relates to:
-  1. Electronic circuit design
-  2. Semiconductor manufacturing
-  3. Integrated circuit architecture
-  4. Transistor-level design
-  5. Chip layout and routing
-  6. VLSI design tools and methodologies
-  7. Semiconductor physics
-  8. Digital or analog circuit design
-  9. Microarchitecture
-  10. Semiconductor fabrication processes
-
-- Respond "No" if the conversation is about any other unrelated topic
-
-Important rules:
-- You must ONLY respond with "Yes" or "No"
-- Do not provide any additional explanation or text
-- Your response should be based on the entire chat history context
-
-Input will be a Python list of dictionaries representing the chat history.
-"""
+    if system_prompt := cfg["system_prompt_condense"]:
+        question = messages[0]["content"]
+        full_system_prompt = f"{system_prompt}\n\nChat History:\n{str(messages[::-2])}\n\nFollow Up Input: \n{question}\n\nStandalone question:\n"
         #messages.append(full_system_prompt)
-        #print(str(messages[::-1]))
-        kwargs = dict(model=model, prompt=full_system_prompt+"\n\n#Chat History:\n"+str(messages[::-1]), extra_body=cfg["extra_api_parameters"])
-        response = await openai_client.completions.create(model=model, prompt=full_system_prompt+"\n\n#Chat History:\n"+str(messages[::-1]), extra_body=cfg["extra_api_parameters"])
-        #messages.pop()
-        print(f"[ANS]{response.choices[0]}")
+        print(full_system_prompt)
+        kwargs = dict(model=model, prompt=full_system_prompt, extra_body=cfg["extra_api_parameters"])
+        response = await openai_client.completions.create(**kwargs)
+        question = response.choices[0].text
+        retrieved_docs = search.hybrid_search(question)
+        context = " ".join(retrieved_docs)
+        print(f"[QUESTION] {question}")
+        print(f"[CONTEXT] {context}")
 
-    if system_prompt := cfg["system_prompt"]:
-        system_prompt_extras = [f"Today's date: {dt.now().strftime('%B %d %Y')}."]
-        if accept_usernames:
-            system_prompt_extras.append("User's names are their Discord IDs and should be typed as '<@ID>'.")
+    if context != "" and cfg["assistant_prompt_qa"] is not None:
+        assistant_prompt = cfg["assistant_prompt_qa"] + f"\n\nContext:\n {context}\n"
+        qa_messages=[{'role': 'assistant', 'content': assistant_prompt},
+                     {'role': 'user',      'content': question}]
+        kwargs = dict(model=model, messages=qa_messages, stream=True, extra_body=cfg["extra_api_parameters"])
+        qa = openai_client.chat.completions.create(**kwargs)
+        print(qa_messages)
+    else:
+        if system_prompt := cfg["system_prompt"]:
+            system_prompt_extras = [f"Today's date: {dt.now().strftime('%B %d %Y')}."]
+            if accept_usernames:
+                system_prompt_extras.append("User's names are their Discord IDs and should be typed as '<@ID>'.")
 
-        full_system_prompt = dict(role="system", content="\n".join([system_prompt] + system_prompt_extras))
-        messages[:-1].append(full_system_prompt)
-    
-    #print(str(messages[::-1]))
-
+            full_system_prompt = dict(role="system", content="\n".join([system_prompt] + system_prompt_extras))
+            messages[:-1].append(full_system_prompt)
+        kwargs = dict(model=model, messages=messages[::-1], stream=True, extra_body=cfg["extra_api_parameters"])
+        qa = openai_client.chat.completions.create(**kwargs)
+   
     # Generate and send response message(s) (can be multiple if response is long)
     response_msgs = []
     response_contents = []
     prev_chunk = None
     edit_task = None
 
-    kwargs = dict(model=model, messages=messages[::-1], stream=True, extra_body=cfg["extra_api_parameters"])
+    
     try:
         async with new_msg.channel.typing():
-            async for curr_chunk in await openai_client.chat.completions.create(**kwargs):
+            async for curr_chunk in await qa:
                 prev_content = prev_chunk.choices[0].delta.content if prev_chunk != None and prev_chunk.choices[0].delta.content else ""
                 curr_content = curr_chunk.choices[0].delta.content or ""
 

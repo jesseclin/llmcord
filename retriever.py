@@ -59,6 +59,7 @@ class retriver:
                     limit=3
                 ),
             ],
+            score_threshold=0.6,
             query=models.FusionQuery(fusion=models.Fusion.RRF)  # Rank Reciprocal Fusion
         )
         
