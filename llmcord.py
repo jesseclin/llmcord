@@ -48,6 +48,8 @@ discord_client = discord.Client(intents=intents, activity=activity)
 
 httpx_client = httpx.AsyncClient()
 
+search = retriver()
+
 msg_nodes = {}
 last_task_time = None
 
@@ -80,8 +82,7 @@ async def on_message(new_msg):
         return
 
     cfg = get_config()
-    search = retriver()
-
+    
     allowed_channel_ids = cfg["allowed_channel_ids"]
     allowed_role_ids = cfg["allowed_role_ids"]
 
@@ -197,18 +198,22 @@ async def on_message(new_msg):
     #    print(f"[ANSWER] {answer}")
     #    if answer == "Yes":
 
-    if system_prompt := cfg["system_prompt_condense"]:
+    context = ""
+    if cfg["system_prompt_condense"] is not None and len(messages)>1 and messages[0]["role"]=='user':
+        system_prompt = cfg["system_prompt_condense"]
         question = messages[0]["content"]
-        full_system_prompt = f"{system_prompt}\n\nChat History:\n{str(messages[::-2])}\n\nFollow Up Input: \n{question}\n\nStandalone question:\n"
+        print(f"[HISTORY 0]{str(messages[: :-1])}\n")
+        print(f"[HISTORY 2]{str(messages[:0:-1])}\n")
+        full_system_prompt = f"{system_prompt}\n\nChat History:\n{str(messages[:0:-1])}\n\nFollow Up Input: \n{question}\n\nStandalone question:\n"
         #messages.append(full_system_prompt)
         print(full_system_prompt)
         kwargs = dict(model=model, prompt=full_system_prompt, extra_body=cfg["extra_api_parameters"])
         response = await openai_client.completions.create(**kwargs)
-        question = response.choices[0].text
+        question = response.choices[0].text.strip()
         retrieved_docs = search.hybrid_search(question)
         context = " ".join(retrieved_docs)
-        print(f"[QUESTION] {question}")
-        print(f"[CONTEXT] {context}")
+        print(f"[QUESTION] [{question}]")
+        print(f"[CONTEXT] [{context}]")
 
     if context != "" and cfg["assistant_prompt_qa"] is not None:
         assistant_prompt = cfg["assistant_prompt_qa"] + f"\n\nContext:\n {context}\n"
