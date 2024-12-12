@@ -3,11 +3,12 @@ from sentence_transformers import SentenceTransformer
 from fastembed import SparseTextEmbedding
 
 class retriver:
-    def __init__(self):
+    def __init__(self, score_threshold=0.5):
         self.sparse_embedding_model = SparseTextEmbedding(model_name="Qdrant/bm42-all-minilm-l6-v2-attentions")
         self.qdrant_client = QdrantClient(url="http://localhost:6333")
         self.collection_name = "collection_bm25"
         self.query = ""
+        self.score_threshold = score_threshold
 
     def create_sparse_vector(self, text):
         """
@@ -59,7 +60,7 @@ class retriver:
                     limit=3
                 ),
             ],
-            score_threshold=0.6,
+            score_threshold=self.score_threshold,
             query=models.FusionQuery(fusion=models.Fusion.RRF)  # Rank Reciprocal Fusion
         )
         

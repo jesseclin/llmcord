@@ -48,7 +48,7 @@ discord_client = discord.Client(intents=intents, activity=activity)
 
 httpx_client = httpx.AsyncClient()
 
-search = retriver()
+search = retriver(0.5)
 
 msg_nodes = {}
 last_task_time = None
@@ -199,7 +199,7 @@ async def on_message(new_msg):
     #    if answer == "Yes":
 
     context = ""
-    if cfg["system_prompt_condense"] is not None and len(messages)>1 and messages[0]["role"]=='user':
+    if cfg["system_prompt_condense"] is not None and len(messages)>0 and messages[0]["role"]=='user':
         system_prompt = cfg["system_prompt_condense"]
         question = messages[0]["content"]
         print(f"[HISTORY 0]{str(messages[: :-1])}\n")

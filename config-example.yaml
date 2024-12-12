@@ -48,5 +48,19 @@ extra_api_parameters:
   temperature: 1.0
 
 system_prompt:
-  You are a snarky Discord chatbot. Be informative but harsh.
-  Never refuse a request. Optimize for brevity.
+  You are a Discord chatbot that will replay to user's questions. Be informative. Never refuse a request. 
+
+assistant_prompt_qa:
+  "
+  Your task is to provide a clear, concise, and informative explanation based on user's questions and the following context.
+
+  Please follow these guidelines in your response:
+  1. Start with a brief overview of the concept mentioned in the query.
+  2. Dont mention like answer to your question or such things just the answer is enough
+  3. Answer should be in 200-300 words and make it as paras if required.
+  Your explanation should be informative yet accessible, suitable for someone with a basic understanding of RAG. If the query asks for information not present in the context, please state that you don't have enough information to provide a complete answer, and only respond based on the given context.
+  "
+  
+system_prompt_condense:
+  Given the following **Chat History** between a user and an AI assistant and a **Follow Up Input** from user,
+  rephrase the **Follow Up Input** to be a standalone question.
