@@ -2,11 +2,18 @@ from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 from fastembed import SparseTextEmbedding
 
+from ollama import Client
+
+oclient = Client(
+  host='http://localhost:11434',
+)
+
+
 class retriver:
-    def __init__(self, score_threshold=0.5):
-        self.sparse_embedding_model = SparseTextEmbedding(model_name="Qdrant/bm42-all-minilm-l6-v2-attentions")
+    def __init__(self, collection_name="collection_bm25", score_threshold=0.5):
+        #self.sparse_embedding_model = SparseTextEmbedding(model_name="Qdrant/bm42-all-minilm-l6-v2-attentions")
         self.qdrant_client = QdrantClient(url="http://localhost:6333")
-        self.collection_name = "collection_bm25"
+        self.collection_name = collection_name
         self.query = ""
         self.score_threshold = score_threshold
 
@@ -27,8 +34,10 @@ class retriver:
         """
         Get dense embedding for the given text using BERT-based model.
         """
-        model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-        embedding = model.encode(text).tolist()
+        #model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        #embedding = model.encode(text).tolist()
+        #embedding = oclient.embeddings(model="all-minilm:33m", prompt=text)["embedding"]
+        embedding = oclient.embeddings(model="bge-m3:latest", prompt=text)["embedding"]
         return embedding  # Convert to list
     
     def hybrid_search(self, query: str):
@@ -51,29 +60,39 @@ class retriver:
             prefetch=[
                 models.Prefetch(
                     query=sparse_query,  # Sparse vector query
-                    using="sparse",
+                    using="text-sparse",
                     limit=3
                 ),
                 models.Prefetch(
                     query=dense_query,  # Dense vector query
-                    using="dense",
+                    using="text-dense",
                     limit=3
                 ),
             ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),  # Rank Reciprocal Fusion
             score_threshold=self.score_threshold,
-            query=models.FusionQuery(fusion=models.Fusion.RRF)  # Rank Reciprocal Fusion
         )
         
         # Extract and return document texts from search results
-        documents = [point.payload['text'] for point in search_results.points]
+        documents = [{'text'    : point.payload['text'],
+                      'page_no' : point.payload['page_no'],
+                      'filename': point.payload['filename'],
+                      'headings': point.payload['headings']} for point in search_results.points]
         print(f"Total documents retrieved: {len(documents)}")
 
         return documents
 
 # Usage Example
 if __name__ == '__main__':
-    search = retriver()
-    query = "Can you explain the objective of sustainable development?"
+    import argparse
+    parser = argparse.ArgumentParser()
+    
+    parser.add_argument('-c', '--collection', help='Qdrant\'s collection name')  
+    args = parser.parse_args() 
+    collection_name = args.collection if args.collection is not None else "collection_bm25"
+
+    search = retriver(collection_name=collection_name)
+    query = "How LLM can help digital hardware design?"
     results = search.hybrid_search(query)
     for doc in results:
         print(doc)

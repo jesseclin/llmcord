@@ -11,6 +11,24 @@ from openai import AsyncOpenAI
 import yaml
 from retriever import retriver
 
+from llama_index.core import VectorStoreIndex, StorageContext, PromptTemplate, get_response_synthesizer
+from llama_index.core.memory import ChatMemoryBuffer
+from llama_index.core.base.llms.types import ChatMessage
+from llama_index.core.chat_engine.types import ChatMode
+from llama_index.vector_stores.qdrant import QdrantVectorStore
+
+from llama_index.embeddings.ollama import OllamaEmbedding
+from llama_index.llms.groq import Groq
+from llama_index.llms.ollama import Ollama
+from llama_index.llms.openrouter import OpenRouter
+
+
+from fastembed import SparseTextEmbedding
+import qdrant_client
+from qdrant_client import QdrantClient, models
+
+import asyncstdlib as a
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
@@ -53,6 +71,105 @@ search = retriver(collection_name="Digital_IC_A_D", score_threshold=0.5)
 msg_nodes = {}
 last_task_time = None
 
+qa_prompt_tmpl = (
+    "Context information is below.\n"
+    "-------------------------------"
+    "{context_str}\n"
+    "-------------------------------"
+    "Given the context information and not prior knowledge,"
+    "answer the query. Please be concise, and complete.\n"
+    "If the context does not contain an answer to the query,"
+    "respond with \"Sorry, I don't know!\"."
+    "Query: {query_str}\n"
+    "Answer: "
+)
+qa_prompt = PromptTemplate(qa_prompt_tmpl)
+
+def create_sparse_vector(query_list):
+    """
+        Create a sparse vector from the text using BM25.
+    """
+    model = SparseTextEmbedding(model_name="Qdrant/bm25")
+
+    indices_list = []
+    values_list  = []
+    for text in query_list:
+        embeddings = list(model.embed(text))[0]
+
+        #sparse_vector = models.SparseVector(
+        indices=embeddings.indices.tolist()
+        values=embeddings.values.tolist()
+
+        indices_list.append(indices)
+        values_list.append(values)
+
+    return indices_list, values_list
+
+ollama_embedding = OllamaEmbedding(
+    model_name="bge-m3:latest",
+    base_url="http://localhost:11434",
+    ollama_additional_kwargs={"mirostat": 0},
+)
+
+client = qdrant_client.QdrantClient(
+    host="localhost",
+    port=6333
+)
+
+aclient = qdrant_client.AsyncQdrantClient(
+    host="localhost",
+    port=6333
+)
+
+vector_store = QdrantVectorStore(client=client,
+                                 aclient=aclient, 
+                                 #collection_name="cmos_vlsi_4ed",
+                                 collection_name="Digital_IC_A_D",
+                                 #collection_name="collection_bm25_256_0",
+                                 #fastembed_sparse_model="Qdrant/bm25",
+                                 sparse_doc_fn=create_sparse_vector,
+                                 sparse_query_fn=create_sparse_vector,
+                                 #hybrid_fusion_fn="rrf",
+                                 enable_hybrid=True)
+#try:
+storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+index = VectorStoreIndex.from_vector_store(
+    embed_model=ollama_embedding,
+    vector_store=vector_store,
+    use_async=True
+)
+
+memory = ChatMemoryBuffer.from_defaults(token_limit=1500)
+
+provider, model = cfg["model"].split("/", 1)
+base_url = cfg["providers"][provider]["base_url"]
+api_key = cfg["providers"][provider].get("api_key", "sk-no-key-required")
+if provider == 'groq':
+    llm = Groq(model=model, api_key=api_key)
+elif provider == 'openrouter':
+    llm = OpenRouter(model=model, api_key=api_key)
+elif provider == 'ollama':
+    llm = Ollama(model=model, base_url=base_url)
+else:
+    raise ValueError("Provider not supported.")
+
+#response_synthesizer = get_response_synthesizer(
+#    llm=GEN_MODEL,
+#    text_qa_template=qa_prompt,
+#    response_mode="compact",
+#)
+
+chat_engine = index.as_chat_engine(
+    #response_synthesizer=response_synthesizer,
+    memory=memory,
+    chat_mode=ChatMode.CONDENSE_PLUS_CONTEXT, 
+    #chat_mode=ChatMode.SIMPLE, 
+    llm=llm, 
+    #verbose=True,
+    streaming=True,
+        
+)
 
 @dataclass
 class MsgNode:
@@ -90,12 +207,7 @@ async def on_message(new_msg):
         allowed_role_ids and not any(role.id in allowed_role_ids for role in getattr(new_msg.author, "roles", []))
     ):
         return
-
-    provider, model = cfg["model"].split("/", 1)
-    base_url = cfg["providers"][provider]["base_url"]
-    api_key = cfg["providers"][provider].get("api_key", "sk-no-key-required")
-    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
-
+    
     accept_images: bool = any(x in model.lower() for x in VISION_MODEL_TAGS)
     accept_usernames: bool = any(x in provider.lower() for x in PROVIDERS_SUPPORTING_USERNAMES)
 
@@ -182,74 +294,50 @@ async def on_message(new_msg):
 
     logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
-    #RAG
-    #if messages[-1]['role'] == 'user':
-    #user_messages = [messages[i]['content'] if messages[i]['role']=='user' else " " for i in range(len(messages) )]
-    #retrieved_docs = search.hybrid_search(" ".join(user_messages))
-    #context = " ".join(retrieved_docs)
-    #messages.append({'content':context, 'role':'assistant'})
+    #print(len(messages))
+    #print(messages)
+    chat_history=[]
+    for _, message in enumerate(messages[:0:-1]):
+    #for _, message in enumerate(messages[::-1]):
+        chat_history.append(ChatMessage.from_str(role=message['role'], content=message['content']))
+    #print(chat_history)
+    #result = chat_engine.chat(
+    #             message=messages[0]["content"],
+    #              chat_history=chat_history
+    #            )
+    #print(f"[DBG]{result}\n")
     
-    #if system_prompt := cfg["system_prompt_classifier"] :
-    #    full_system_prompt = f"{system_prompt}\n\nChat History:\n{str(messages[::-1])}\n"
-    #    print(system_prompt)
-    #    kwargs = dict(model=model, prompt=full_system_prompt, extra_body=cfg["extra_api_parameters"])
-    #    response = await openai_client.completions.create(**kwargs)
-    #    answer = response.choices[0].text
-    #    print(f"[ANSWER] {answer}")
-    #    if answer == "Yes":
-
-    context = ""
-    if cfg["system_prompt_condense"] is not None and len(messages)>0 and messages[0]["role"]=='user':
-        system_prompt = cfg["system_prompt_condense"]
-        question = messages[0]["content"]
-        print(f"[HISTORY 0]{str(messages[: :-1])}\n")
-        print(f"[HISTORY 2]{str(messages[:0:-1])}\n")
-        full_system_prompt = f"{system_prompt}\n\nChat History:\n{str(messages[:0:-1])}\n\nFollow Up Input: \n{question}\n\nStandalone question:\n"
-        #messages.append(full_system_prompt)
-        print(full_system_prompt)
-        kwargs = dict(model=model, prompt=full_system_prompt, extra_body=cfg["extra_api_parameters"])
-        response = await openai_client.completions.create(**kwargs)
-        question = response.choices[0].text.strip()
-        retrieved_docs = search.hybrid_search(question)
-        context = " ".join([doc['text'] for doc in retrieved_docs])
-        print(f"[QUESTION] [{question}]")
-        print(f"[CONTEXT] [{context}]")
-
-    if context != "" and cfg["assistant_prompt_qa"] is not None:
-        assistant_prompt = cfg["assistant_prompt_qa"] + f"\n\nContext:\n {context}\n"
-        qa_messages=[{'role': 'assistant', 'content': assistant_prompt},
-                     {'role': 'user',      'content': question}]
-        kwargs = dict(model=model, messages=qa_messages, stream=True, extra_body=cfg["extra_api_parameters"])
-        qa = openai_client.chat.completions.create(**kwargs)
-        print(qa_messages)
-    else:
-        if system_prompt := cfg["system_prompt"]:
-            system_prompt_extras = [f"Today's date: {dt.now().strftime('%B %d %Y')}."]
-            if accept_usernames:
-                system_prompt_extras.append("User's names are their Discord IDs and should be typed as '<@ID>'.")
-
-            full_system_prompt = dict(role="system", content="\n".join([system_prompt] + system_prompt_extras))
-            messages[:-1].append(full_system_prompt)
-        kwargs = dict(model=model, messages=messages[::-1], stream=True, extra_body=cfg["extra_api_parameters"])
-        qa = openai_client.chat.completions.create(**kwargs)
-   
+    qa = chat_engine.astream_chat(
+            message=messages[0]["content"],
+            chat_history=chat_history
+        )
+    
     # Generate and send response message(s) (can be multiple if response is long)
     response_msgs = []
     response_contents = []
     prev_chunk = None
     edit_task = None
 
-    
     try:
         async with new_msg.channel.typing():
-            async for curr_chunk in await qa:
-                prev_content = prev_chunk.choices[0].delta.content if prev_chunk != None and prev_chunk.choices[0].delta.content else ""
-                curr_content = curr_chunk.choices[0].delta.content or ""
+            response = await qa
+            #responses = result.async_response_gen()
+            #async for curr_chunk in a.enumerate(response.async_response_gen()):
+            async for curr_chunk in a.enumerate(response.achat_stream):
+                print(curr_chunk)
+                #continue    
+            #async for curr_chunk in enumerate(result):
+            #async for curr_chunk in await qa.response:
+            #async for curr_chunk in await qa.response:
+                #prev_content = prev_chunk.choices[0].delta.content if prev_chunk != None and prev_chunk.choices[0].delta.content else ""
+                #curr_content = curr_chunk.choices[0].delta.content or ""
+                prev_content = prev_chunk[1].delta if prev_chunk != None and prev_chunk[1].delta else ""
+                curr_content = curr_chunk[1].delta or ""
 
                 if response_contents or prev_content:
                     if response_contents == [] or len(response_contents[-1] + prev_content) > max_message_length:
                         response_contents.append("")
-
+                        #print(f"{len(response_contents[-1] + prev_content)}")
                         if not use_plain_responses:
                             embed = discord.Embed(description=(prev_content + STREAMING_INDICATOR), color=EMBED_COLOR_INCOMPLETE)
                             for warning in sorted(user_warnings):
@@ -265,12 +353,14 @@ async def on_message(new_msg):
                     response_contents[-1] += prev_content
 
                     if not use_plain_responses:
-                        finish_reason = curr_chunk.choices[0].finish_reason
+                        #finish_reason = curr_chunk.choices[0].finish_reason
 
                         ready_to_edit: bool = (edit_task == None or edit_task.done()) and dt.now().timestamp() - last_task_time >= EDIT_DELAY_SECONDS
                         msg_split_incoming: bool = len(response_contents[-1] + curr_content) > max_message_length
-                        is_final_edit: bool = finish_reason != None or msg_split_incoming
-                        is_good_finish: bool = finish_reason != None and any(finish_reason.lower() == x for x in ("stop", "end_turn"))
+                        #is_final_edit: bool = finish_reason != None or msg_split_incoming
+                        #is_good_finish: bool = finish_reason != None and any(finish_reason.lower() == x for x in ("stop", "end_turn"))
+                        is_final_edit: bool = response.is_done or msg_split_incoming
+                        is_good_finish: bool = response.is_done
 
                         if ready_to_edit or is_final_edit:
                             if edit_task != None:
