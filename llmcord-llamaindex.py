@@ -11,7 +11,7 @@ from openai import AsyncOpenAI
 import yaml
 from retriever import retriver
 
-from llama_index.core import VectorStoreIndex, StorageContext, PromptTemplate, get_response_synthesizer
+from llama_index.core import VectorStoreIndex, StorageContext, ServiceContext, PromptTemplate, get_response_synthesizer
 from llama_index.core.memory import ChatMemoryBuffer
 from llama_index.core.base.llms.types import ChatMessage
 from llama_index.core.chat_engine.types import ChatMode
@@ -160,16 +160,26 @@ else:
 #    response_mode="compact",
 #)
 
+#from llama_index.core import Settings
+#
+#from llama_index.core.callbacks import CallbackManager, LlamaDebugHandler, CBEventType
+#
+#llama_debug = LlamaDebugHandler(print_trace_on_end=True)
+#callback_manager = CallbackManager([llama_debug])
+#Settings.callback_manager=callback_manager
+
 chat_engine = index.as_chat_engine(
     #response_synthesizer=response_synthesizer,
     memory=memory,
     chat_mode=ChatMode.CONDENSE_PLUS_CONTEXT, 
     #chat_mode=ChatMode.SIMPLE, 
+    #chat_mode=ChatMode.CONDENSE_QUESTION,
     llm=llm, 
-    #verbose=True,
+    verbose=True,
     streaming=True,
-        
 )
+
+
 
 @dataclass
 class MsgNode:
@@ -307,38 +317,43 @@ async def on_message(new_msg):
     #            )
     #print(f"[DBG]{result}\n")
     
-    qa = chat_engine.astream_chat(
-            message=messages[0]["content"],
-            chat_history=chat_history
-        )
+    response = await chat_engine.astream_chat(
+                message=messages[0]["content"],
+                chat_history=chat_history
+            )
     
     # Generate and send response message(s) (can be multiple if response is long)
     response_msgs = []
     response_contents = []
     prev_chunk = None
     edit_task = None
-
+    just_sent = False 
     try:
         async with new_msg.channel.typing():
-            response = await qa
+            #response = await qa
             #responses = result.async_response_gen()
-            #async for curr_chunk in a.enumerate(response.async_response_gen()):
-            async for curr_chunk in a.enumerate(response.achat_stream):
+            async for idx, curr_chunk in a.enumerate(response.async_response_gen()):
+            #async for idx, curr_chunk in a.enumerate(response.achat_stream):
                 print(curr_chunk)
+                #if response.is_function_false_event is not None:
+                #    print(f"[IDX]{idx} {response_contents} {response.is_done}")
                 #continue    
             #async for curr_chunk in enumerate(result):
             #async for curr_chunk in await qa.response:
             #async for curr_chunk in await qa.response:
                 #prev_content = prev_chunk.choices[0].delta.content if prev_chunk != None and prev_chunk.choices[0].delta.content else ""
                 #curr_content = curr_chunk.choices[0].delta.content or ""
-                prev_content = prev_chunk[1].delta if prev_chunk != None and prev_chunk[1].delta else ""
-                curr_content = curr_chunk[1].delta or ""
+                prev_content = prev_chunk if prev_chunk != None and prev_chunk else ""
+                curr_content = curr_chunk or ""
+                #event_pairs = llama_debug.get_llm_inputs_outputs()
 
                 if response_contents or prev_content:
                     if response_contents == [] or len(response_contents[-1] + prev_content) > max_message_length:
                         response_contents.append("")
+                        
                         #print(f"{len(response_contents[-1] + prev_content)}")
                         if not use_plain_responses:
+                            #print(f"[PREV][{prev_content}]")
                             embed = discord.Embed(description=(prev_content + STREAMING_INDICATOR), color=EMBED_COLOR_INCOMPLETE)
                             for warning in sorted(user_warnings):
                                 embed.add_field(name=warning, value="", inline=False)
@@ -354,32 +369,71 @@ async def on_message(new_msg):
 
                     if not use_plain_responses:
                         #finish_reason = curr_chunk.choices[0].finish_reason
+                        finish_reason = None
+                        #try:
+                        #if len(event_pairs[1])==2:
+                        #    finish_reason = event_pairs[1][1].payload['response'].raw.choices[0].finish_reason
+                        #    print(f"[EVENT 11]{finish_reason}")
+                        #else:
+                        #    finish_reason = None
+                        #except:
+                        #    finish_reason = None
+                        #try:
+                        #print(event_pairs[1][0].payload['completion'].raw.choices[0].finish_reason)
+                        #except:
+                        #    print(event_pairs[0][1].payload['completion'])
 
                         ready_to_edit: bool = (edit_task == None or edit_task.done()) and dt.now().timestamp() - last_task_time >= EDIT_DELAY_SECONDS
                         msg_split_incoming: bool = len(response_contents[-1] + curr_content) > max_message_length
-                        #is_final_edit: bool = finish_reason != None or msg_split_incoming
-                        #is_good_finish: bool = finish_reason != None and any(finish_reason.lower() == x for x in ("stop", "end_turn"))
-                        is_final_edit: bool = response.is_done or msg_split_incoming
-                        is_good_finish: bool = response.is_done
+                        is_final_edit: bool = finish_reason != None or msg_split_incoming
+                        is_good_finish: bool = (finish_reason != None and any(finish_reason.lower() == x for x in ("stop", "end_turn")))
+                        #is_final_edit: bool = response.is_done or msg_split_incoming
+                        #is_good_finish: bool = response.is_done
 
                         if ready_to_edit or is_final_edit:
                             if edit_task != None:
                                 await edit_task
-
+                            print(f"[DONE] [{response_msgs[-1]}]")
                             embed.description = response_contents[-1] if is_final_edit else (response_contents[-1] + STREAMING_INDICATOR)
                             embed.color = EMBED_COLOR_COMPLETE if msg_split_incoming or is_good_finish else EMBED_COLOR_INCOMPLETE
                             edit_task = asyncio.create_task(response_msgs[-1].edit(embed=embed))
                             last_task_time = dt.now().timestamp()
+                            just_sent = True
+                        else:
+                            just_sent = False
 
+                #for i in range(len(event_pairs)):
+                #    print(f"[{i}] {len(event_pairs[i])}")
+                
+                #print(f"[REASON]{str(event_pairs[1][0].payload['completion'].raw.choices[0].finish_reason)}")
+                #print(f"[EVENT 00]{event_pairs[0][0]}")
+                #print(f"[EVENT 01]{event_pairs[0][1]}")
+                #print(f"[EVENT 10]{event_pairs[1][0]}")
                 prev_chunk = curr_chunk
+        
+        #if response.is_function_false_event is not None:
+        #    print(f"[FIN] {response_contents} {response.is_done}")
+        
 
-        if use_plain_responses:
+        if use_plain_responses :
             for content in response_contents:
                 reply_to_msg = new_msg if response_msgs == [] else response_msgs[-1]
                 response_msg = await reply_to_msg.reply(content=content, suppress_embeds=True)
                 msg_nodes[response_msg.id] = MsgNode(next_msg=new_msg)
                 await msg_nodes[response_msg.id].lock.acquire()
                 response_msgs.append(response_msg)
+        else:
+            if edit_task != None:
+                await edit_task
+            print(f"[LAST] [{response_msgs[-1]}]")
+            embed.description = response_contents[-1] if just_sent == False else ""
+            embed.color = EMBED_COLOR_COMPLETE
+            edit_task = asyncio.create_task(response_msgs[-1].edit(embed=embed))
+            last_task_time = dt.now().timestamp()
+
+        if edit_task != None:
+            await edit_task
+
     except:
         logging.exception("Error while generating response")
 
